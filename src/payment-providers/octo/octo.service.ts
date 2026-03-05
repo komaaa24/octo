@@ -82,9 +82,12 @@ export class OctoService {
         const returnUrl = this.configService.get<string>('OCTO_RETURN_URL');
         const notifyUrl = this.configService.get<string>('OCTO_NOTIFY_URL');
         const language = this.configService.get<string>('OCTO_LANGUAGE') || 'uz';
+        if (!notifyUrl) {
+            throw new Error('OCTO_NOTIFY_URL is required to receive payment status callbacks');
+        }
         if (testModeEnabled) payload.test = true;
         if (returnUrl) payload.return_url = returnUrl;
-        if (notifyUrl) payload.notify_url = notifyUrl;
+        payload.notify_url = notifyUrl;
         if (language) payload.language = language;
 
         logger.info(`Creating Octo payment with payload: ${JSON.stringify(payload, null, 2)}`);
@@ -154,14 +157,19 @@ export class OctoService {
         }
 
         // Update transaction status
-        switch (status) {
+        // Octo docs: succeeded/payed/paid/captured -> success, canceled/failed/rejected/expired -> failure
+        switch ((status as string)?.toLowerCase()) {
+            case 'succeeded':
             case 'paid':
+            case 'payed': // older spelling in docs
             case 'captured':
                 tx.status = TransactionStatus.PAID;
                 break;
             case 'canceled':
+            case 'cancelled':
             case 'failed':
             case 'rejected':
+            case 'expired':
                 tx.status = TransactionStatus.CANCELED;
                 break;
             default:
