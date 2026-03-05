@@ -43,6 +43,28 @@ export class OctoService {
         return selectedSport === 'wrestling' ? 'Yakka kurash' : 'Futbol';
     }
 
+    /**
+     * Resolve notify URL with sane fallbacks so prod to'lovlar xatoga tushmaydi.
+     */
+    private resolveNotifyUrl(): string {
+        const explicit = this.configService.get<string>('OCTO_NOTIFY_URL');
+        if (explicit) return explicit;
+
+        const basePayme = this.configService.get<string>('BASE_PAYME_URL');
+        if (basePayme) {
+            try {
+                const url = new URL(basePayme);
+                url.pathname = '/api/octo/notify';
+                url.search = '';
+                return url.toString();
+            } catch (e) {
+                logger.warn(`Failed to derive notify URL from BASE_PAYME_URL: ${basePayme}`);
+            }
+        }
+
+        throw new Error('OCTO_NOTIFY_URL is required to receive payment status callbacks');
+    }
+
     async createOneTimePayment(params: CreatePaymentParams): Promise<{
         payUrl: string;
         octoPaymentUUID: string;
@@ -80,7 +102,7 @@ export class OctoService {
         };
 
         const returnUrl = this.configService.get<string>('OCTO_RETURN_URL');
-        const notifyUrl = this.configService.get<string>('OCTO_NOTIFY_URL');
+        const notifyUrl = this.resolveNotifyUrl();
         const language = this.configService.get<string>('OCTO_LANGUAGE') || 'uz';
         if (!notifyUrl) {
             throw new Error('OCTO_NOTIFY_URL is required to receive payment status callbacks');
