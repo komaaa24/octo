@@ -18,8 +18,15 @@ type CreatePaymentParams = {
 @Injectable()
 export class OctoService {
     private readonly preparePaymentUrl = 'https://secure.octo.uz/prepare_payment';
+    private bot: Bot | null = null;
 
-    constructor(private readonly configService: ConfigService) { }
+    constructor(private readonly configService: ConfigService) {
+        // Initialize bot if token is available
+        const botToken = this.configService.get<string>('BOT_TOKEN');
+        if (botToken) {
+            this.bot = new Bot(botToken);
+        }
+    }
 
     private formatInitTime(date: Date = new Date()): string {
         const year = date.getFullYear();
@@ -56,7 +63,10 @@ export class OctoService {
         }
 
         const shopTransactionId = `${plan._id}-${params.userId}-${Date.now()}`;
-        const overrideAmount = this.configService.get<number>('OCTO_TEST_AMOUNT');
+        const testModeEnabled = params.test || this.configService.get<string>('OCTO_TEST_MODE') === 'true';
+        const overrideAmount = testModeEnabled
+            ? Number(this.configService.get<number>('OCTO_TEST_AMOUNT'))
+            : undefined;
 
         const payload: Record<string, any> = {
             octo_shop_id: Number(octoShopId),
@@ -72,17 +82,20 @@ export class OctoService {
         const returnUrl = this.configService.get<string>('OCTO_RETURN_URL');
         const notifyUrl = this.configService.get<string>('OCTO_NOTIFY_URL');
         const language = this.configService.get<string>('OCTO_LANGUAGE') || 'uz';
-        const forceTest = this.configService.get<string>('OCTO_TEST_MODE') === 'true';
-
-        if (params.test || forceTest) payload.test = true;
+        if (testModeEnabled) payload.test = true;
         if (returnUrl) payload.return_url = returnUrl;
         if (notifyUrl) payload.notify_url = notifyUrl;
         if (language) payload.language = language;
 
+        logger.info(`Creating Octo payment with payload: ${JSON.stringify(payload, null, 2)}`);
+
         try {
             const response = await axios.post(this.preparePaymentUrl, payload, {
                 headers: { 'Content-Type': 'application/json' },
+                timeout: 10000,
             });
+
+            logger.info(`Octo API response: ${JSON.stringify(response.data, null, 2)}`);
 
             if (!response.data || response.data.error) {
                 logger.error(`Octo error: ${JSON.stringify(response.data)}`);
@@ -91,6 +104,7 @@ export class OctoService {
 
             const data = response.data.data || response.data;
 
+            // Save transaction to database
             await Transaction.create({
                 provider: PaymentProvider.OCTO,
                 paymentType: PaymentTypes.ONETIME,
@@ -117,10 +131,21 @@ export class OctoService {
      * Handle Octo push notification.
      */
     async handleNotification(body: any): Promise<void> {
+        logger.info(`Octo notification received: ${JSON.stringify(body, null, 2)}`);
+
         const { octo_payment_UUID: paymentUUID, status } = body || {};
-        if (!paymentUUID || !status) {
-            throw new Error('Missing payment UUID or status');
+
+        if (!paymentUUID) {
+            logger.error('Octo notification missing payment UUID');
+            throw new Error('Missing payment UUID');
         }
+
+        if (!status) {
+            logger.error(`Octo notification missing status for payment ${paymentUUID}`);
+            throw new Error('Missing payment status');
+        }
+
+        logger.info(`Processing Octo payment ${paymentUUID} with status: ${status}`);
 
         const tx = await Transaction.findOne({ transId: paymentUUID, provider: PaymentProvider.OCTO });
         if (!tx) {
@@ -128,7 +153,7 @@ export class OctoService {
             return;
         }
 
-        // Basic status mapping
+        // Update transaction status
         switch (status) {
             case 'paid':
             case 'captured':
@@ -140,25 +165,17 @@ export class OctoService {
                 tx.status = TransactionStatus.CANCELED;
                 break;
             default:
-                logger.info(`Octo notify: received status ${status} for ${paymentUUID}`);
+                logger.info(`Octo notify: received unhandled status ${status} for ${paymentUUID}`);
                 break;
         }
 
         await tx.save();
+        logger.info(`Transaction ${paymentUUID} status updated to: ${tx.status}`);
 
-        // If payment is successful, auto-activate subscription and notify user.
+        // If payment is successful, create subscription and notify user
         if (tx.status === TransactionStatus.PAID) {
             try {
-                const botToken = this.configService.get<string>('BOT_TOKEN');
-                if (!botToken) {
-                    logger.error('BOT_TOKEN not configured, cannot send Telegram message');
-                    return;
-                }
-
-                const bot = new Bot(botToken);
-                // SubscriptionService expects the project's BotContext (with session), but here we only have a plain Bot instance.
-                // Cast to any to avoid TypeScript generic mismatch in this webhook handler.
-                const subscriptionService = new SubscriptionService(bot as any);
+                logger.info(`Starting subscription creation for payment ${paymentUUID}`);
 
                 const plan = await Plan.findById(tx.planId);
                 const user = await UserModel.findById(tx.userId);
@@ -173,49 +190,155 @@ export class OctoService {
                     return;
                 }
 
-                const { user: subscription } = await subscriptionService.createSubscription(
-                    tx.userId.toString(),
-                    plan,
-                    user.username,
-                );
-
-                // Always mark user as subscribed to football and use the football channel invite.
-                await UserModel.updateOne({ _id: user._id }, { $set: { subscribedTo: 'football' } });
-
-                const channelId = this.configService.get<string>('CHANNEL_ID');
-
+                // Create subscription
+                let subscription: any;
                 try {
-                    const privateLink = await bot.api.createChatInviteLink(channelId as string, {
-                        member_limit: 1,
-                        expire_date: 0,
-                        creates_join_request: false,
-                    });
-
-                    const keyboard = new InlineKeyboard()
-                        .url('🔗 Kanalga kirish', privateLink.invite_link)
-                        .row()
-                        .text('🔙 Asosiy menyu', 'main_menu');
-
-                    const endDate = subscription.subscriptionEnd;
-                    const endFormatted = endDate ? `${endDate.getDate().toString().padStart(2, '0')}.${(endDate.getMonth() + 1).toString().padStart(2, '0')}.${endDate.getFullYear()}` : '';
-
-                    const message = `🎉 Tabriklaymiz! To'lov muvaffaqiyatli amalga oshirildi.\n\n⏰ Obuna tugash muddati: ${endFormatted}\n\nQuyidagi havola orqali kanalga kirishingiz mumkin:`;
-
-                    if (user.telegramId) {
-                        await bot.api.sendMessage(Number(user.telegramId), message, {
-                            reply_markup: keyboard,
-                            parse_mode: 'HTML',
-                        });
-                    } else {
-                        logger.warn(`Octo notify: user ${user._id} has no telegramId, cannot send invite link`);
+                    if (!this.bot) {
+                        logger.error('BOT_TOKEN not configured, cannot create subscription or send message');
+                        return;
                     }
-                } catch (err) {
-                    logger.error(`Failed to create/send invite link for transaction ${paymentUUID}: ${err}`);
+
+                    // Create subscription based on selected sport
+                    if (tx.selectedSport === 'wrestling') {
+                        subscription = await this.createWrestlingSubscription(user, plan);
+                    } else {
+                        subscription = await this.createFootballSubscription(user, plan);
+                    }
+
+                    logger.info(`Subscription created successfully for user ${user._id}`);
+
+                } catch (subscriptionError) {
+                    logger.error(`Error creating subscription for payment ${paymentUUID}:`, subscriptionError);
+                    // Continue to try sending channel link even if subscription creation fails
                 }
 
+                // Always mark user as subscribed and use the appropriate channel
+                const selectedSport = tx.selectedSport || 'football'; // Default to football if not set
+                if (selectedSport === 'wrestling') {
+                    await UserModel.updateOne({ _id: user._id }, { $set: { subscribedTo: 'wrestling' } });
+                } else {
+                    await UserModel.updateOne({ _id: user._id }, { $set: { subscribedTo: 'football' } });
+                }
+
+                // Send channel invite link
+                await this.sendChannelInviteMessage(user, selectedSport, subscription);
+
             } catch (err) {
-                logger.error(`Error processing Octo paid notification for ${paymentUUID}: ${err}`);
+                logger.error(`Error processing Octo paid notification for ${paymentUUID}:`, err);
             }
+        }
+    }
+
+    private async createFootballSubscription(user: any, plan: any) {
+        // Create football subscription
+        const subscriptionData = {
+            user: user._id,
+            plan: plan._id,
+            telegramId: user.telegramId,
+            planName: plan.name,
+            subscriptionType: 'subscription',
+            startDate: new Date(),
+            
+            endDate: new Date(Date.now() + plan.duration * 24 * 60 * 60 * 1000),
+            isActive: true,
+            autoRenew: false,
+            status: 'active'
+        };
+
+        return await import('../../database/models/user-subscription.model').then(
+            ({ UserSubscription }) => UserSubscription.create(subscriptionData)
+        );
+    }
+
+    private async createWrestlingSubscription(user: any, plan: any) {
+        // Update user's wrestling subscription dates
+        await UserModel.updateOne(
+            { _id: user._id },
+            {
+                $set: {
+                    isActiveSubsForWrestling: true,
+                    subscriptionStartForWrestling: new Date(),
+                    subscriptionEndForWrestling: new Date(Date.now() + plan.duration * 24 * 60 * 60 * 1000)
+                }
+            }
+        );
+
+        // Create user subscription record
+        const subscriptionData = {
+            user: user._id,
+            plan: plan._id,
+            telegramId: user.telegramId,
+            planName: plan.name,
+            subscriptionType: 'subscription',
+            startDate: new Date(),
+            endDate: new Date(Date.now() + plan.duration * 24 * 60 * 60 * 1000),
+            isActive: true,
+            autoRenew: false,
+            status: 'active'
+        };
+
+        return await import('../../database/models/user-subscription.model').then(
+            ({ UserSubscription }) => UserSubscription.create(subscriptionData)
+        );
+    }
+
+    private async sendChannelInviteMessage(user: any, selectedSport: string, subscription: any) {
+        try {
+            if (!this.bot) {
+                logger.error('Bot not initialized, cannot send channel invite message');
+                return;
+            }
+
+            const channelId = selectedSport === 'wrestling'
+                ? this.configService.get<string>('WRESTLING_CHANNEL_ID')
+                : this.configService.get<string>('CHANNEL_ID');
+
+            if (!channelId) {
+                logger.error(`Channel ID not configured for sport: ${selectedSport}`);
+                return;
+            }
+
+            // Create private invite link
+            const privateLink = await this.bot.api.createChatInviteLink(channelId, {
+                member_limit: 1,
+                expire_date: 0,
+                creates_join_request: false,
+            });
+
+            logger.info(`Channel invite link created: ${privateLink.invite_link}`);
+
+            const keyboard = new InlineKeyboard()
+                .url('🔗 Kanalga kirish', privateLink.invite_link)
+                .row()
+                .text('🔙 Asosiy menyu', 'main_menu');
+
+            // Format end date
+            let endDate: Date;
+            if (selectedSport === 'wrestling' && subscription?.user?.subscriptionEndForWrestling) {
+                endDate = subscription.user.subscriptionEndForWrestling;
+            } else if (subscription?.subscriptionEnd) {
+                endDate = subscription.subscriptionEnd;
+            } else {
+                // Default to 30 days from now if no subscription data
+                endDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+            }
+
+            const endFormatted = `${endDate.getDate().toString().padStart(2, '0')}.${(endDate.getMonth() + 1).toString().padStart(2, '0')}.${endDate.getFullYear()}`;
+
+            const message = `🎉 Tabriklaymiz! To'lov muvaffaqiyatli amalga oshirildi.\n\n⏰ Obuna tugash muddati: ${endFormatted}\n\nQuyidagi havola orqali kanalga kirishingiz mumkin:`;
+
+            if (user.telegramId) {
+                await this.bot.api.sendMessage(Number(user.telegramId), message, {
+                    reply_markup: keyboard,
+                    parse_mode: 'HTML',
+                });
+                logger.info(`Channel invite message sent to user ${user.telegramId}`);
+            } else {
+                logger.warn(`User ${user._id} has no telegramId, cannot send invite link`);
+            }
+
+        } catch (error) {
+            logger.error(`Failed to send channel invite message:`, error);
         }
     }
 }
