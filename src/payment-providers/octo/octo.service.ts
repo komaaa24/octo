@@ -30,6 +30,7 @@ type OctoCallbackPayload = {
 export class OctoService {
     private readonly preparePaymentUrl = 'https://secure.octo.uz/prepare_payment';
     private bot: Bot | null = null;
+    private reconciliationInProgress = false;
 
     constructor(private readonly configService: ConfigService) {
         // Initialize bot if token is available
@@ -123,7 +124,8 @@ export class OctoService {
         payload.notify_url = notifyUrl;
         if (language) payload.language = language;
 
-        logger.info(`Creating Octo payment with payload: ${JSON.stringify(payload, null, 2)}`);
+        const safePayloadForLog = { ...payload, octo_secret: '***' };
+        logger.info(`Creating Octo payment with payload: ${JSON.stringify(safePayloadForLog, null, 2)}`);
 
         try {
             const response = await axios.post(this.preparePaymentUrl, payload, {
@@ -149,6 +151,7 @@ export class OctoService {
                 planId: plan._id,
                 status: TransactionStatus.CREATED,
                 transId: data.octo_payment_UUID,
+                shopTransactionId,
                 selectedSport: params.selectedSport,
             });
 
@@ -160,6 +163,97 @@ export class OctoService {
         } catch (error: any) {
             logger.error('Failed to initiate Octo payment', error);
             throw new Error(error?.message || 'Failed to initiate Octo payment');
+        }
+    }
+
+    async verifyAndFinalizePaymentByUUID(paymentUUID: string): Promise<{ octoStatus: string; transactionStatus: string }> {
+        const tx: any = await Transaction.findOne({
+            provider: PaymentProvider.OCTO,
+            transId: paymentUUID,
+        });
+
+        if (!tx) {
+            throw new Error('Transaction not found');
+        }
+
+        if (tx.status === TransactionStatus.PAID) {
+            return { octoStatus: 'succeeded', transactionStatus: tx.status };
+        }
+
+        if (!tx.shopTransactionId) {
+            throw new Error('Missing shopTransactionId for reconciliation');
+        }
+
+        const octoShopId = Number(this.configService.get<number>('OCTO_SHOP_ID'));
+        const octoSecret = this.configService.get<string>('OCTO_SECRET_KEY');
+        if (!octoShopId || !octoSecret) {
+            throw new Error('Octo credentials are not configured');
+        }
+
+        const statusPayload = {
+            octo_shop_id: octoShopId,
+            octo_secret: octoSecret,
+            shop_transaction_id: tx.shopTransactionId,
+        };
+
+        const statusResponse = await axios.post(this.preparePaymentUrl, statusPayload, {
+            headers: { 'Content-Type': 'application/json' },
+            timeout: 10000,
+        });
+        const data = statusResponse.data?.data || statusResponse.data;
+        const octoStatus = String(data?.status || '').toLowerCase();
+        if (!octoStatus) {
+            throw new Error('Could not resolve payment status from Octo');
+        }
+
+        await this.handleNotification({
+            shop_transaction_id: tx.shopTransactionId,
+            octo_payment_UUID: paymentUUID,
+            status: octoStatus,
+        });
+
+        const refreshed: any = await Transaction.findById(tx._id).lean();
+        return {
+            octoStatus,
+            transactionStatus: refreshed?.status || tx.status,
+        };
+    }
+
+    async reconcilePendingPayments(): Promise<void> {
+        if (this.reconciliationInProgress) return;
+        this.reconciliationInProgress = true;
+
+        try {
+            const minAgeSec = Number(this.configService.get<string>('OCTO_RECONCILE_MIN_AGE_SEC') || '30');
+            const batchLimit = Number(this.configService.get<string>('OCTO_RECONCILE_BATCH_LIMIT') || '20');
+            const threshold = new Date(Date.now() - Math.max(minAgeSec, 0) * 1000);
+
+            const pendingTxs = await Transaction.find({
+                provider: PaymentProvider.OCTO,
+                status: TransactionStatus.CREATED,
+                createdAt: { $lte: threshold },
+                transId: { $exists: true, $ne: null },
+                shopTransactionId: { $exists: true, $ne: null },
+            })
+                .sort({ createdAt: 1 })
+                .limit(Math.max(batchLimit, 1))
+                .select({ transId: 1 })
+                .lean();
+
+            if (!pendingTxs.length) return;
+
+            logger.info(`Octo reconcile: checking ${pendingTxs.length} pending payments`);
+
+            for (const tx of pendingTxs) {
+                try {
+                    const result = await this.verifyAndFinalizePaymentByUUID(String(tx.transId));
+                    logger.info(`Octo reconcile result for ${tx.transId}: octo=${result.octoStatus}, tx=${result.transactionStatus}`);
+                } catch (error: any) {
+                    logger.warn(`Octo reconcile failed for ${tx.transId}: ${error?.message || 'unknown error'}`);
+                }
+            }
+        } finally {
+            this.reconciliationInProgress = false;
         }
     }
 
@@ -191,7 +285,7 @@ export class OctoService {
             provider: PaymentProvider.OCTO,
             $or: [
                 { transId: paymentUUID },
-                ...(shopTransactionId ? [{ transId: shopTransactionId }] : []),
+                ...(shopTransactionId ? [{ shopTransactionId }] : []),
             ],
         });
         if (!tx) {

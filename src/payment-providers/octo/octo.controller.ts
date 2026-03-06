@@ -49,4 +49,22 @@ export class OctoController {
             return res.status(HttpStatus.BAD_REQUEST).json({ message: error?.message || 'Failed to process notification' });
         }
     }
+
+    @Get('verify')
+    async verifyPayment(
+        @Query('paymentUUID') paymentUUID: string,
+        @Res() res: Response,
+    ) {
+        if (!paymentUUID) {
+            return res.status(HttpStatus.BAD_REQUEST).json({ message: 'paymentUUID is required' });
+        }
+
+        try {
+            const result = await this.octoService.verifyAndFinalizePaymentByUUID(paymentUUID);
+            return res.status(HttpStatus.OK).json({ ok: true, ...result });
+        } catch (error: any) {
+            logger.error('Error verifying Octo payment', error);
+            return res.status(HttpStatus.BAD_REQUEST).json({ message: error?.message || 'Failed to verify payment' });
+        }
+    }
 }

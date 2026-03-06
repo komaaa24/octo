@@ -37,6 +37,11 @@ export const transactionSchema = new mongoose.Schema({
         unique: true,
         sparse: true
     },
+    shopTransactionId: {
+        type: String,
+        unique: true,
+        sparse: true
+    },
     amount: {
         type: Number,
         required: true
