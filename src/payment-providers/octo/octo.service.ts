@@ -15,6 +15,17 @@ type CreatePaymentParams = {
     test?: boolean;
 };
 
+type OctoCallbackPayload = {
+    shop_transaction_id?: string;
+    octo_payment_UUID?: string;
+    status?: string;
+    data?: {
+        shop_transaction_id?: string;
+        octo_payment_UUID?: string;
+        status?: string;
+    };
+};
+
 @Injectable()
 export class OctoService {
     private readonly preparePaymentUrl = 'https://secure.octo.uz/prepare_payment';
@@ -158,7 +169,11 @@ export class OctoService {
     async handleNotification(body: any): Promise<void> {
         logger.info(`Octo notification received: ${JSON.stringify(body, null, 2)}`);
 
-        const { octo_payment_UUID: paymentUUID, status } = body || {};
+        const payload = (body || {}) as OctoCallbackPayload;
+        const paymentUUID = payload.octo_payment_UUID || payload.data?.octo_payment_UUID;
+        const shopTransactionId = payload.shop_transaction_id || payload.data?.shop_transaction_id;
+        const statusRaw = payload.status || payload.data?.status;
+        const status = String(statusRaw || '').toLowerCase();
 
         if (!paymentUUID) {
             logger.error('Octo notification missing payment UUID');
@@ -172,15 +187,31 @@ export class OctoService {
 
         logger.info(`Processing Octo payment ${paymentUUID} with status: ${status}`);
 
-        const tx = await Transaction.findOne({ transId: paymentUUID, provider: PaymentProvider.OCTO });
+        const tx = await Transaction.findOne({
+            provider: PaymentProvider.OCTO,
+            $or: [
+                { transId: paymentUUID },
+                ...(shopTransactionId ? [{ transId: shopTransactionId }] : []),
+            ],
+        });
         if (!tx) {
             logger.warn(`Octo notify: transaction not found for ${paymentUUID}`);
             return;
         }
 
+        if (tx.status === TransactionStatus.PAID) {
+            logger.info(`Octo notify: transaction ${paymentUUID} is already PAID, skipping duplicate callback`);
+            return;
+        }
+
         // Update transaction status
-        // Octo docs: succeeded/payed/paid/captured -> success, canceled/failed/rejected/expired -> failure
-        switch ((status as string)?.toLowerCase()) {
+        // Octo docs transaction statuses: created, wait_user_action, waiting_for_capture, succeeded, canceled.
+        switch (status) {
+            case 'created':
+            case 'wait_user_action':
+            case 'waiting_for_capture':
+                tx.status = TransactionStatus.CREATED;
+                break;
             case 'succeeded':
             case 'paid':
             case 'payed': // older spelling in docs
