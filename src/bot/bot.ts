@@ -863,12 +863,6 @@ export class SubscriptionBot {
             return;
         }
 
-        if (data.startsWith('check_octo_')) {
-            const paymentUUID = data.replace('check_octo_', '');
-            await this.handleCheckOctoPayment(ctx, paymentUUID);
-            return;
-        }
-
 
         if (data === 'main_menu') {
             ctx.session.hasAgreedToTerms = false;
@@ -1659,7 +1653,7 @@ Qaysi sport turiga qiziqasiz?`,
                 return;
             }
 
-            const { payUrl: octoLink, octoPaymentUUID } = await this.octoService.createOneTimePayment({
+            const { payUrl: octoLink } = await this.octoService.createOneTimePayment({
                 userId: user._id as string,
                 selectedSport,
                 telegramId: telegramId as number,
@@ -1667,8 +1661,6 @@ Qaysi sport turiga qiziqasiz?`,
 
             const keyboard = new InlineKeyboard()
                 .url(ctx.session.lang === 'ru' ? "🌍 Оплатить через Octo" : "🌍 Xalqaro to'lov (Octo)", octoLink)
-                .row()
-                .text(ctx.session.lang === 'ru' ? "✅ Проверить оплату" : "✅ To'lovni tekshirish", `check_octo_${octoPaymentUUID}`)
                 .row()
                 .text(ctx.session.lang === 'ru' ? "🔙 Назад" : "🔙 Orqaga", "back_to_payment_types")
                 .text(ctx.session.lang === 'ru' ? "🏠 Главное меню" : "🏠 Asosiy menyu", "main_menu");
@@ -1685,38 +1677,6 @@ Qaysi sport turiga qiziqasiz?`,
         } catch (error) {
             logger.error('International payment error', error);
             await ctx.answerCallbackQuery("Xalqaro to'lovni ishga tushirishda xatolik yuz berdi.");
-        }
-    }
-
-    private async handleCheckOctoPayment(ctx: BotContext, paymentUUID: string): Promise<void> {
-        try {
-            const result = await this.octoService.verifyAndFinalizePaymentByUUID(paymentUUID);
-            if (result.transactionStatus === 'PAID') {
-                const msg = {
-                    uz: "✅ To'lov tasdiqlandi. Obunangiz aktivlashtirildi va kanal havolasi yuborildi.",
-                    ru: "✅ Оплата подтверждена. Подписка активирована, ссылка на канал отправлена.",
-                };
-                await this.bot.api.answerCallbackQuery(ctx.callbackQuery!.id, {
-                    text: msg[ctx.session.lang as 'uz' | 'ru'],
-                    show_alert: true
-                });
-                return;
-            }
-
-            const pending = {
-                uz: "⏳ To'lov hali tasdiqlanmadi. Iltimos, 10-20 soniyadan keyin qayta tekshiring.",
-                ru: "⏳ Платеж пока не подтвержден. Попробуйте снова через 10-20 секунд.",
-            };
-            await this.bot.api.answerCallbackQuery(ctx.callbackQuery!.id, {
-                text: pending[ctx.session.lang as 'uz' | 'ru'],
-                show_alert: true
-            });
-        } catch (error: any) {
-            logger.error('Octo payment verification error', error);
-            await this.bot.api.answerCallbackQuery(ctx.callbackQuery!.id, {
-                text: "To'lov tekshiruvida xatolik. Iltimos, keyinroq qayta urinib ko'ring.",
-                show_alert: true
-            });
         }
     }
 

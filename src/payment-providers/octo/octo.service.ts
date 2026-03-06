@@ -31,6 +31,7 @@ export class OctoService {
     private readonly preparePaymentUrl = 'https://secure.octo.uz/prepare_payment';
     private bot: Bot | null = null;
     private reconciliationInProgress = false;
+    private botUsernameCache: string | null = null;
 
     constructor(private readonly configService: ConfigService) {
         // Initialize bot if token is available
@@ -53,6 +54,43 @@ export class OctoService {
 
     private resolvePlanName(selectedSport: string): string {
         return selectedSport === 'wrestling' ? 'Yakka kurash' : 'Futbol';
+    }
+
+    private async resolveReturnUrl(): Promise<string | undefined> {
+        const configuredReturnUrl = this.configService.get<string>('OCTO_RETURN_URL');
+        if (
+            configuredReturnUrl &&
+            configuredReturnUrl.trim() !== '' &&
+            configuredReturnUrl !== 'https://t.me/' &&
+            configuredReturnUrl !== 'https://t.me'
+        ) {
+            return configuredReturnUrl;
+        }
+
+        const botUsernameFromEnv = this.configService.get<string>('BOT_USERNAME');
+        if (botUsernameFromEnv) {
+            return `https://t.me/${botUsernameFromEnv.replace(/^@/, '')}`;
+        }
+
+        if (this.botUsernameCache) {
+            return `https://t.me/${this.botUsernameCache}`;
+        }
+
+        if (!this.bot) {
+            return configuredReturnUrl;
+        }
+
+        try {
+            const me = await this.bot.api.getMe();
+            if (me.username) {
+                this.botUsernameCache = me.username;
+                return `https://t.me/${me.username}`;
+            }
+        } catch (error) {
+            logger.warn('Failed to auto-resolve bot username for OCTO_RETURN_URL');
+        }
+
+        return configuredReturnUrl;
     }
 
     /**
@@ -113,7 +151,7 @@ export class OctoService {
             description: `One-time payment for ${planName}`,
         };
 
-        const returnUrl = this.configService.get<string>('OCTO_RETURN_URL');
+        const returnUrl = await this.resolveReturnUrl();
         const notifyUrl = this.resolveNotifyUrl();
         const language = this.configService.get<string>('OCTO_LANGUAGE') || 'uz';
         if (!notifyUrl) {
