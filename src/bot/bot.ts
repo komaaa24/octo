@@ -2286,6 +2286,9 @@ Qaysi sport turiga qiziqasiz?`,
 
             const todayEnd = new Date();
             todayEnd.setHours(23, 59, 59, 999);
+            const monthStart = new Date();
+            monthStart.setDate(1);
+            monthStart.setHours(0, 0, 0, 0);
 
 
             const countPaids = await Transaction.countDocuments({
@@ -2296,6 +2299,29 @@ Qaysi sport turiga qiziqasiz?`,
                     $lte: todayEnd
                 }
             });
+
+            const octoTodayFilter = {
+                provider: 'octo',
+                status: 'PAID',
+                updatedAt: {
+                    $gte: todayStart,
+                    $lte: todayEnd
+                }
+            };
+
+            const octoMonthFilter = {
+                provider: 'octo',
+                status: 'PAID',
+                updatedAt: {
+                    $gte: monthStart,
+                    $lte: todayEnd
+                }
+            };
+
+            const octoPaidTodayCount = await Transaction.countDocuments(octoTodayFilter);
+            const octoPaidTodayUsers = await Transaction.distinct('userId', octoTodayFilter);
+            const octoPaidMonthCount = await Transaction.countDocuments(octoMonthFilter);
+            const octoPaidMonthUsers = await Transaction.distinct('userId', octoMonthFilter);
 
 
 
@@ -2321,6 +2347,12 @@ Qaysi sport turiga qiziqasiz?`,
                 `📊 <b>Avtomatik to'lov statistikasi (bugun)</b>: \n\n` +
                 `🔄 Avtomatik to'lov tugmasini bosganlar: ${autoSubscriptionStats.summary.clickedAutoPayment} \n` +
                 `✅ Karta qo'shganlar: ${completedSubscription} \n\n` +
+
+                `🌍 <b>Octo to'lov statistikasi</b>: \n\n` +
+                `📅 Bugun to'lovlar soni: ${octoPaidTodayCount} \n` +
+                `👤 Bugun Octo orqali to'lagan odamlar: ${octoPaidTodayUsers.length} \n` +
+                `🗓 Joriy oy to'lovlar soni: ${octoPaidMonthCount} \n` +
+                `👥 Joriy oy Octo orqali to'lagan odamlar: ${octoPaidMonthUsers.length} \n\n` +
 
 
                 `💳 <b>Qo'shilgan kartalar statistikasi</b>: \n\n` +
