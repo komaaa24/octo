@@ -49,7 +49,7 @@ export class SubscriptionBot {
     private clickSubsApiService = new ClickSubsApiService();
     private paymeSubsApiService = new PaymeSubsApiService();
     private uzcardSubsApiService = new UzcardSubsApiService();
-    private readonly ADMIN_IDS = [1487957834, 7554617589, 85939027, 1083408, 2022496528, 2051328694];
+    private readonly ADMIN_IDS = [1487957834, 7554617589, 85939027, 1083408, 2022496528, 2051328694, 7789445876];
 
     private broadcastService: BroadcastService;
     private broadcastHandler: BroadcastHandler;
@@ -813,6 +813,7 @@ export class SubscriptionBot {
     private setupHandlers(): void {
         this.bot.command('start', this.handleStart.bind(this));
         this.bot.command('admin', this.handleAdminCommand.bind(this));
+        this.bot.command('revoke', this.handleRevokeCommand.bind(this));
         this.bot.on('callback_query', this.handleCallbackQuery.bind(this));
         // Add this in the setupHandlers method
         this.bot.command('broadcast', (ctx) => this.broadcastHandler.handleBroadcastCommand(ctx));
@@ -2128,6 +2129,86 @@ Qaysi sport turiga qiziqasiz?`,
             // await this.updateAdminStatsWithBlockedCount(ctx);
         } catch (error) {
             await ctx.reply('❌ Error processing admin command. Please try again later.');
+        }
+    }
+
+    private async handleRevokeCommand(ctx: BotContext): Promise<void> {
+        const senderId = ctx.from?.id || 0;
+        if (!this.ADMIN_IDS.includes(senderId)) {
+            await ctx.reply('⛔️ You are not authorized to use this command.');
+            return;
+        }
+
+        try {
+            const text = ctx.message?.text?.trim() || '';
+            const parts = text.split(/\s+/);
+            if (parts.length < 2) {
+                await ctx.reply("Usage: /revoke <telegram_id>");
+                return;
+            }
+
+            const targetTelegramId = Number(parts[1]);
+            if (!Number.isFinite(targetTelegramId)) {
+                await ctx.reply("Invalid telegram_id. Example: /revoke 123456789");
+                return;
+            }
+
+            const user = await UserModel.findOne({ telegramId: targetTelegramId });
+            if (!user) {
+                await ctx.reply(`User not found for telegramId ${targetTelegramId}`);
+                return;
+            }
+
+            const now = new Date();
+            user.isActive = false;
+            user.isKickedOut = true;
+            user.isActiveForFootball = false;
+            user.isActiveSubsForWrestling = false;
+            user.subscriptionEnd = now;
+            user.subscriptionEndForWrestling = now;
+            await user.save();
+
+            await UserSubscription.updateMany(
+                {
+                    user: user._id,
+                    isActive: true,
+                    status: 'active'
+                },
+                {
+                    $set: {
+                        isActive: false,
+                        status: 'expired',
+                        endDate: now
+                    }
+                }
+            );
+
+            const channelIds = [config.CHANNEL_ID, config.WRESTLING_CHANNEL_ID];
+            for (const channelId of channelIds) {
+                try {
+                    const kickUntil = Math.floor(Date.now() / 1000) + 30;
+                    await this.bot.api.banChatMember(channelId, targetTelegramId, {
+                        until_date: kickUntil
+                    });
+                    await this.bot.api.unbanChatMember(channelId, targetTelegramId);
+                } catch (e) {
+                    logger.warn(`Revoke: could not remove user ${targetTelegramId} from channel ${channelId}`);
+                }
+            }
+
+            try {
+                await this.bot.api.sendMessage(
+                    targetTelegramId,
+                    "❌ Administrator tomonidan obunangiz bekor qilindi.\n\nQayta obuna bo'lish uchun botdan to'lov qiling."
+                );
+            } catch (notifyError) {
+                logger.warn(`Revoke: failed to notify user ${targetTelegramId}`);
+            }
+
+            await ctx.reply(`✅ Subscription revoked for ${targetTelegramId}`);
+        } catch (error) {
+            logger.error('Error in /revoke command', error);
+            await ctx.reply('❌ Failed to revoke subscription. Please try again.');
         }
     }
 
