@@ -2319,9 +2319,7 @@ Qaysi sport turiga qiziqasiz?`,
             };
 
             const octoPaidTodayCount = await Transaction.countDocuments(octoTodayFilter);
-            const octoPaidTodayUsers = await Transaction.distinct('userId', octoTodayFilter);
             const octoPaidMonthCount = await Transaction.countDocuments(octoMonthFilter);
-            const octoPaidMonthUsers = await Transaction.distinct('userId', octoMonthFilter);
 
 
 
@@ -2350,9 +2348,7 @@ Qaysi sport turiga qiziqasiz?`,
 
                 `🌍 <b>Octo to'lov statistikasi</b>: \n\n` +
                 `📅 Bugun to'lovlar soni: ${octoPaidTodayCount} \n` +
-                `👤 Bugun Octo orqali to'lagan odamlar: ${octoPaidTodayUsers.length} \n` +
-                `🗓 Joriy oy to'lovlar soni: ${octoPaidMonthCount} \n` +
-                `👥 Joriy oy Octo orqali to'lagan odamlar: ${octoPaidMonthUsers.length} \n\n` +
+                `🗓 Joriy oy to'lovlar soni: ${octoPaidMonthCount} \n\n` +
 
 
                 `💳 <b>Qo'shilgan kartalar statistikasi</b>: \n\n` +
