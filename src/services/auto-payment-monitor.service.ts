@@ -53,7 +53,7 @@ export class AutoPaymentMonitorService {
 
         for (const user of expiringUsers) {
             const planId = user.plans?.[0]?._id || 'NoPlan';
-            logger.info(`Sent expiration warning to user(UserSubscription) ${user.telegramId}, planId: ${planId}`);
+            logger.info(`Processing auto payment candidate user ${user.telegramId}, planId: ${planId}`);
             await this.attemptAutoPayment(user, planId as string);
         }
 
@@ -283,8 +283,9 @@ export class AutoPaymentMonitorService {
                     message
                 );
                 logger.info(`Sent failed payment notification to user ${user.telegramId}`);
+            } else {
+                logger.info(`Did not send failed payment notification to user: ${user.telegramId} because attempt count is less than 30`);
             }
-            logger.info(`Did not send failed payment notification to user: ${user.telegramId} because attempt count is less than 30`);
         } catch (error) {
             logger.error(`Error sending failed payment notification to user ${user.telegramId}:`, error);
         }
