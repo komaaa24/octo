@@ -291,16 +291,39 @@ export class OctoService {
     }
 
     private async createFootballSubscription(user: any, plan: any) {
-        // Create football subscription
+        const startDate = new Date();
+        const endDate = new Date(Date.now() + plan.duration * 24 * 60 * 60 * 1000);
+
+        // Keep UserModel fields in sync because status screens read from these fields.
+        await UserModel.updateOne(
+            { _id: user._id },
+            {
+                $set: {
+                    subscriptionType: 'onetime',
+                    subscriptionStart: startDate,
+                    subscriptionEnd: endDate,
+                    isActive: true,
+                    isKickedOut: false,
+                    hasSentWarning: false,
+                    isActiveForFootball: true,
+                    isActiveSubsForWrestling: false,
+                    subscribedTo: 'football',
+                },
+                $addToSet: {
+                    plans: plan._id,
+                }
+            }
+        );
+
+        // Create football subscription history record
         const subscriptionData = {
             user: user._id,
             plan: plan._id,
             telegramId: user.telegramId,
             planName: plan.name,
-            subscriptionType: 'subscription',
-            startDate: new Date(),
-            
-            endDate: new Date(Date.now() + plan.duration * 24 * 60 * 60 * 1000),
+            subscriptionType: 'onetime',
+            startDate,
+            endDate,
             isActive: true,
             autoRenew: false,
             status: 'active'
@@ -312,14 +335,28 @@ export class OctoService {
     }
 
     private async createWrestlingSubscription(user: any, plan: any) {
+        const startDate = new Date();
+        const endDate = new Date(Date.now() + plan.duration * 24 * 60 * 60 * 1000);
+
         // Update user's wrestling subscription dates
         await UserModel.updateOne(
             { _id: user._id },
             {
                 $set: {
+                    subscriptionType: 'onetime',
+                    subscriptionStart: startDate,
+                    subscriptionEnd: endDate,
+                    isActive: true,
+                    isKickedOut: false,
+                    hasSentWarning: false,
+                    isActiveForFootball: false,
+                    subscribedTo: 'wrestling',
                     isActiveSubsForWrestling: true,
-                    subscriptionStartForWrestling: new Date(),
-                    subscriptionEndForWrestling: new Date(Date.now() + plan.duration * 24 * 60 * 60 * 1000)
+                    subscriptionStartForWrestling: startDate,
+                    subscriptionEndForWrestling: endDate
+                },
+                $addToSet: {
+                    plans: plan._id,
                 }
             }
         );
@@ -330,9 +367,9 @@ export class OctoService {
             plan: plan._id,
             telegramId: user.telegramId,
             planName: plan.name,
-            subscriptionType: 'subscription',
-            startDate: new Date(),
-            endDate: new Date(Date.now() + plan.duration * 24 * 60 * 60 * 1000),
+            subscriptionType: 'onetime',
+            startDate,
+            endDate,
             isActive: true,
             autoRenew: false,
             status: 'active'
@@ -379,6 +416,8 @@ export class OctoService {
                 endDate = subscription.user.subscriptionEndForWrestling;
             } else if (subscription?.subscriptionEnd) {
                 endDate = subscription.subscriptionEnd;
+            } else if (subscription?.endDate) {
+                endDate = new Date(subscription.endDate);
             } else {
                 // Default to 30 days from now if no subscription data
                 endDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);

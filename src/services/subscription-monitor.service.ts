@@ -98,20 +98,26 @@ export class SubscriptionMonitorService {
 
     public async handleExpiredUser(user: IUserDocument): Promise<void> {
         try {
-            // First unban to clear any existing ban
-            // await this.bot.api.unbanChatMember(config.CHANNEL_ID, user.telegramId);
+            const channelId = user.subscribedTo === 'wrestling'
+                ? config.WRESTLING_CHANNEL_ID
+                : config.CHANNEL_ID;
 
-            // Then kick them out (ban until current time + 32 seconds)
-            // This effectively just removes them from the channel without banning
-            //TODO here we are commenting in these logic, it was responsible to ban users(kick them out)
-            // const kickUntil = Math.floor(Date.now() / 1000) + 15;
-            // await this.bot.api.banChatMember(config.CHANNEL_ID, user.telegramId, {
-            //     until_date: kickUntil
-            // });
+            // Kick user from channel when one-time access expires.
+            try {
+                const kickUntil = Math.floor(Date.now() / 1000) + 30;
+                await this.bot.api.banChatMember(channelId, user.telegramId, {
+                    until_date: kickUntil
+                });
+                await this.bot.api.unbanChatMember(channelId, user.telegramId);
+            } catch (kickError) {
+                logger.error(`Failed to remove expired user ${user.telegramId} from channel ${channelId}:`, kickError);
+            }
 
             // Update user status
             user.hasSentWarning = true;
             user.isActive = false;
+            user.isActiveForFootball = false;
+            user.isActiveSubsForWrestling = false;
             user.isKickedOut = true;
             await user.save();
 
@@ -120,8 +126,9 @@ export class SubscriptionMonitorService {
                 .row()
                 .text("📊 Obuna holati", "check_status");
 
-            const message = `❌ Sizning obunangiz muddati tugadi, iltimos qayta obuna bo'ling.\n\n` +
-                `Qayta obuna bo'lish uchun quyidagi tugmani bosing:`;
+            const message = `❌ Sizning bir martalik 1 oylik kanalga kirish huquqingiz tugadi.\n\n` +
+                `Qayta to'lov qilib Octo to'lov tizimi bilan yana bir oylik kanal foydalanish huquqiga ega bo'ling.\n\n` +
+                `Rahmat.`;
 
             await this.bot.api.sendMessage(
                 user.telegramId,
