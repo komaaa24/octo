@@ -51,7 +51,13 @@ export class AutoPaymentMonitorService {
 
         logger.info(`Found ${expiringUsers.length} users with subscriptions expiring today`);
 
-        for (const user of expiringUsers) {
+        const maxUsersPerRun = Number(process.env.AUTO_PAYMENT_MAX_USERS_PER_RUN || '0');
+        const usersToProcess = maxUsersPerRun > 0 ? expiringUsers.slice(0, maxUsersPerRun) : expiringUsers;
+        if (maxUsersPerRun > 0 && expiringUsers.length > maxUsersPerRun) {
+            logger.info(`Auto payment run is capped: processing ${maxUsersPerRun}/${expiringUsers.length} users`);
+        }
+
+        for (const user of usersToProcess) {
             const planId = user.plans?.[0]?._id || 'NoPlan';
             logger.info(`Processing auto payment candidate user ${user.telegramId}, planId: ${planId}`);
             await this.attemptAutoPayment(user, planId as string);

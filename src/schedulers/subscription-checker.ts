@@ -24,8 +24,13 @@ export class SubscriptionChecker {
         this.userSubscriptionExpirationService = userSubscriptionExpirationService;
     }
     async start(): Promise<void> {
-        // Run checks immediately when started
-       await this.runChecks();
+        // Optional startup run; useful to avoid noisy startup processing in dev.
+        const runOnStart = process.env.SUBSCRIPTION_CHECK_RUN_ON_START !== 'false';
+        if (runOnStart) {
+            await this.runChecks();
+        } else {
+            logger.info('Skipping initial subscription checks because SUBSCRIPTION_CHECK_RUN_ON_START=false');
+        }
 
         // Then run every 24 hours
         this.checkInterval = setInterval(() => {
@@ -59,8 +64,13 @@ export class SubscriptionChecker {
             logger.info('UserSubscription expiration checks completed.');
 
             logger.info('Running auto payment checks...');
-            await this.autoPaymentMonitorService.processAutoPayments();
-            logger.info('Auto payment checks completed.');
+            const autoPaymentEnabled = process.env.AUTO_PAYMENT_CHECKS_ENABLED !== 'false';
+            if (autoPaymentEnabled) {
+                await this.autoPaymentMonitorService.processAutoPayments();
+                logger.info('Auto payment checks completed.');
+            } else {
+                logger.info('Auto payment checks are disabled by AUTO_PAYMENT_CHECKS_ENABLED=false');
+            }
 
 
             //TODO: later uncomment this.
